@@ -1,5 +1,3 @@
-# Pilot Simulation 2
-
 This folder contains the code for the pilot-fixed and CV-only simulation runs, plus plotting scripts for the generated results.
 
 The core estimator/function files are copied from the working simulation folder and should be treated as source files:
