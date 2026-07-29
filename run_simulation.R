@@ -10,6 +10,11 @@
 #     3. Run the final simulation using estimator-specific fixed choices.
 #   cv_only:
 #     Run the final simulation with CV tuning in every replication.
+#     Local-polynomial bandwidth can be chosen by --bandwidth:
+#       cv     = each estimator uses its own default/CV bandwidth.
+#       oracle = all non-oracle local-polynomial estimators use the OR bandwidth.
+#       fixed  = all local-polynomial estimators use --h_fixed.
+#       all    = run cv, oracle, and fixed in one invocation.
 #
 # Example:
 #   Rscript run_simulation.R --mode pilot_fixed \
@@ -51,9 +56,26 @@ nsim_pilot <- as.integer(args$nsim_pilot %||% "50")
 nsim       <- as.integer(args$nsim %||% "500")
 outdir     <- args$outdir %||% if (mode == "cv_only") "results_cv_ntr2500" else "results"
 rate       <- as.numeric(args$rate %||% "0.3")  # unused when est_r = TRUE
+bandwidth  <- args$bandwidth %||% if (mode == "pilot_fixed") "pilot_fixed" else "cv"
+h_fixed    <- as.numeric(args$h_fixed %||% args$h %||% NA_real_)
+h_fixed_values_arg <- args$h_fixed_values %||% args$h_values %||% ""
+h_fixed_values <- if (nzchar(h_fixed_values_arg)) {
+  as.numeric(strsplit(h_fixed_values_arg, ",", fixed = TRUE)[[1]])
+} else {
+  h_fixed
+}
 
 if (!(mode %in% c("pilot_fixed", "cv_only"))) {
   stop("--mode must be one of: pilot_fixed, cv_only")
+}
+if (!(bandwidth %in% c("cv", "fixed", "oracle", "all", "pilot_fixed"))) {
+  stop("--bandwidth must be one of: cv, fixed, oracle, all, pilot_fixed")
+}
+if (mode == "cv_only" && bandwidth == "pilot_fixed") {
+  stop("--bandwidth pilot_fixed is only valid with --mode pilot_fixed")
+}
+if (bandwidth %in% c("fixed", "all") && any(!is.finite(h_fixed_values) | h_fixed_values <= 0)) {
+  stop("--bandwidth fixed/all requires positive --h_fixed or comma-separated --h_fixed_values")
 }
 if (!(setting %in% c(1, 2, 3))) {
   stop("--setting must be one of 1, 2, 3")
@@ -212,7 +234,9 @@ make_config <- function(fix.df.or.h = FALSE,
                         df.poly = 1:10,
                         df.bs = 1:10,
                         h.seq = seq(0.05, 0.35, length.out = 15),
-                        fixed_tuning = NULL) {
+                        fixed_tuning = NULL,
+                        bandwidth_mode = "cv",
+                        fixed_h = NA_real_) {
   config <- list(
     n = n,
     n.tr = n.tr,
@@ -239,7 +263,9 @@ make_config <- function(fix.df.or.h = FALSE,
     df.seq.bs = df.bs,
     h.seq = h.seq,
     fix.df.or.h = fix.df.or.h,
-    fixed_tuning = fixed_tuning
+    fixed_tuning = fixed_tuning,
+    bandwidth_mode = bandwidth_mode,
+    fixed_h = fixed_h
   )
 
   config$g.x <- get_g(beta_g = beta_g, g_type = g_type)
@@ -270,6 +296,7 @@ run_sims <- function(config, nsim, seed_offset, label) {
           " n.tr=", config$n.tr,
           " nsim=", nsim,
           " fixed_tuning=", isTRUE(config$fix.df.or.h),
+          " bandwidth=", config$bandwidth_mode,
           " cores=", cores)
 
   mclapply(
@@ -346,26 +373,35 @@ stamp <- format(Sys.time(), "%m%d_%H%M%S")
 base_name <- sprintf("setting%d_%s_n%d_ntr%d", setting, g_type, n, n.tr)
 h_grid <- seq(0.05, 0.35, length.out = 15)
 
-if (mode == "cv_only") {
+format_h_tag <- function(h) gsub("[.]", "p", sprintf("%.3f", h))
+
+run_cv_bandwidth <- function(bw_mode, fixed_h_value = h_fixed) {
+  file_bw_tag <- bw_mode
+  if (bw_mode == "fixed") {
+    file_bw_tag <- paste0("fixedh", format_h_tag(fixed_h_value))
+  }
+
   cv_config <- make_config(
     fix.df.or.h = FALSE,
     df.fourier = 1:10,
     df.poly = 1:10,
     df.bs = 1:10,
     h.seq = h_grid,
-    fixed_tuning = NULL
+    fixed_tuning = NULL,
+    bandwidth_mode = bw_mode,
+    fixed_h = fixed_h_value
   )
 
   cv_result <- run_sims(
     config = cv_config,
     nsim = nsim,
     seed_offset = 100000,
-    label = "cv-only final"
+    label = paste0("cv-only final, bandwidth=", bw_mode)
   )
 
   cv_file <- file.path(
     outdir,
-    sprintf("cv_%s_nsim%d_%s.rds", base_name, nsim, stamp)
+    sprintf("cv_%s_nsim%d_bw%s_%s.rds", base_name, nsim, file_bw_tag, stamp)
   )
 
   saveRDS(
@@ -373,13 +409,40 @@ if (mode == "cv_only") {
       result = cv_result,
       config = cv_config,
       fixed_tuning = NULL,
-      note = "CV tuning in every replication; no fixed df/h."
+      bandwidth_mode = bw_mode,
+      bandwidth_label = file_bw_tag,
+      fixed_h = fixed_h_value,
+      note = "CV-only run; local-polynomial bandwidth mode recorded in bandwidth_mode."
     ),
     cv_file
   )
 
-  message("Finished.")
   message("CV-only file: ", cv_file)
+  invisible(cv_file)
+}
+
+if (mode == "cv_only") {
+  if (bandwidth == "all") {
+    out_files <- c(
+      cv = run_cv_bandwidth("cv"),
+      oracle = run_cv_bandwidth("oracle"),
+      setNames(
+        vapply(h_fixed_values, function(h) run_cv_bandwidth("fixed", fixed_h_value = h), character(1)),
+        paste0("fixed_h_", format_h_tag(h_fixed_values))
+      )
+    )
+  } else if (bandwidth == "fixed") {
+    out_files <- setNames(
+      vapply(h_fixed_values, function(h) run_cv_bandwidth("fixed", fixed_h_value = h), character(1)),
+      paste0("fixed_h_", format_h_tag(h_fixed_values))
+    )
+  } else {
+    out_files <- setNames(run_cv_bandwidth(bandwidth), bandwidth)
+  }
+
+  message("Finished.")
+  message("CV-only file(s):")
+  print(out_files)
   quit(save = "no", status = 0)
 }
 
@@ -417,7 +480,9 @@ final_config <- make_config(
   df.poly = 1:10,
   df.bs = 1:10,
   h.seq = h_grid,
-  fixed_tuning = fixed_tuning
+  fixed_tuning = fixed_tuning,
+  bandwidth_mode = "pilot_fixed",
+  fixed_h = NA_real_
 )
 
 final_result <- run_sims(
@@ -429,7 +494,7 @@ final_result <- run_sims(
 
 final_file <- file.path(
   outdir,
-  sprintf("fixed_%s_pilot%d_nsim%d_%s.rds", base_name, nsim_pilot, nsim, stamp)
+  sprintf("fixed_%s_pilot%d_nsim%d_bwpilot_fixed_%s.rds", base_name, nsim_pilot, nsim, stamp)
 )
 saveRDS(
   list(
@@ -438,6 +503,8 @@ saveRDS(
     pilot_result = pilot_result,
     fixed_tuning = fixed_tuning,
     pilot_config = pilot_config,
+    bandwidth_mode = "pilot_fixed",
+    fixed_h = NA_real_,
     note = "Pilot and fixed-tuning final results are stored together."
   ),
   final_file

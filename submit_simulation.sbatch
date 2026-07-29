@@ -9,7 +9,7 @@
 
 # Usage:
 #   sbatch submit_simulation.sbatch
-#   MODE=cv_only sbatch --array=1-6 submit_simulation.sbatch
+#   MODE=cv_only BANDWIDTH=all H_FIXED_VALUES=0.10,0.15,0.20 sbatch --array=1-6 submit_simulation.sbatch
 #
 # MODE=pilot_fixed runs 3 settings x 2 g_types x 2 n.tr values.
 # MODE=cv_only runs 3 settings x 2 g_types with n.tr fixed at 2500.
@@ -20,6 +20,9 @@ MODE=${MODE:-pilot_fixed}
 N=${N:-2500}
 NSIM=${NSIM:-500}
 NSIM_PILOT=${NSIM_PILOT:-50}
+BANDWIDTH=${BANDWIDTH:-all}
+H_FIXED=${H_FIXED:-}
+H_FIXED_VALUES=${H_FIXED_VALUES:-}
 
 mkdir -p logs
 
@@ -56,6 +59,7 @@ if [ "${MODE}" = "pilot_fixed" ]; then
   echo "nsim_pilot=${NSIM_PILOT}"
   echo "nsim=${NSIM}"
   echo "outdir=${OUTDIR}"
+  echo "bandwidth=pilot_fixed"
 
   Rscript run_simulation.R \
     --mode pilot_fixed \
@@ -65,6 +69,7 @@ if [ "${MODE}" = "pilot_fixed" ]; then
     --n_tr "${NTR}" \
     --nsim_pilot "${NSIM_PILOT}" \
     --nsim "${NSIM}" \
+    --bandwidth pilot_fixed \
     --outdir "${OUTDIR}"
 
 elif [ "${MODE}" = "cv_only" ]; then
@@ -92,15 +97,28 @@ elif [ "${MODE}" = "cv_only" ]; then
   echo "n.tr=${NTR}"
   echo "nsim=${NSIM}"
   echo "outdir=${OUTDIR}"
+  echo "bandwidth=${BANDWIDTH}"
+  echo "h_fixed=${H_FIXED}"
+  echo "h_fixed_values=${H_FIXED_VALUES}"
 
-  Rscript run_simulation.R \
+  CMD=(Rscript run_simulation.R
     --mode cv_only \
     --setting "${SETTING}" \
     --g_type "${GTYPE}" \
     --n "${N}" \
     --n_tr "${NTR}" \
     --nsim "${NSIM}" \
-    --outdir "${OUTDIR}"
+    --bandwidth "${BANDWIDTH}" \
+    --outdir "${OUTDIR}")
+
+  if [ -n "${H_FIXED}" ]; then
+    CMD+=(--h_fixed "${H_FIXED}")
+  fi
+  if [ -n "${H_FIXED_VALUES}" ]; then
+    CMD+=(--h_fixed_values "${H_FIXED_VALUES}")
+  fi
+
+  "${CMD[@]}"
 
 else
   echo "Unknown MODE=${MODE}. Use MODE=pilot_fixed or MODE=cv_only."
